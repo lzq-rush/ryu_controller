@@ -154,8 +154,8 @@ def get_all_path(hosts,topo):
         path = dijkstra(src,topo)
         for dst in path.keys():
             all_path[src][dst] = path[dst]
-        # print("start: ",src)
-        # print(path)
+        print("start: ",src)
+        print(path)
     return all_path
     # return all_path
 

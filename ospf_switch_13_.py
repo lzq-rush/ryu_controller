@@ -83,8 +83,9 @@ from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
 import algorithms
 from ryu.lib.packet import arp
-from ryu.lib.packet import ipv6,dhcp
+from ryu.lib.packet import ipv6,dhcp,ipv4,udp
 from ryu.lib import mac
+from ryu.lib import addrconv
 
 ARP = arp.arp.__name__
 ETHERNET = ethernet.ethernet.__name__
@@ -115,11 +116,12 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
         self.netmask = '255.255.255.0'
         self.dns = '8.8.8.8'
         self.bin_dns = addrconv.ipv4.text_to_bin(self.dns)
-        self.hostname = 'huehuehue'
+        self.hostname = str.encode('huehuehue')
         self.bin_netmask = addrconv.ipv4.text_to_bin(self.netmask)
         self.bin_server = addrconv.ipv4.text_to_bin(self.dhcp_server)
-        self.ip_addr = '192.0.2.9'
-
+        self.ip_addr_prefix = '10.0.0.'
+        self.ip_counter = 1
+        self.ip_pool = {}
 
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
@@ -181,15 +183,25 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
 
         dhcp_pkt = pkt.get_protocols(dhcp.dhcp)
         if dhcp_pkt:
-            self.dhcp_handler(datapath, port, pkt)
-
+            self.dhcp_handler(datapath, in_port, pkt)
             return None
-
-
 
         #----end
 
+        #---process IGMP------
+        
+        ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
 
+        ipv4_dst = ipv4_pkt.dst
+
+        if ipv4_dst == '224.0.0.22' or ipv4_dst == '224.0.0.251':
+            match = parser.OFPMatch(ipv4_dst=ipv4_dst)
+            actions = []
+            self.add_flow(datapath, 1, match, actions)
+            return None
+
+
+        #-----end
 
         #----process irrelevent packet
 
@@ -207,7 +219,8 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
         dpid = datapath.id
         self.mac_to_port.setdefault(dpid, {})
         self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
-        print(pkt.protocols)
+        # print(pkt.protocols)
+        # print("------end------")
         
         self.mac_to_port[dpid][src] = in_port
 
@@ -221,12 +234,8 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
         # if dst != 'ff:ff:ff:ff:ff:ff':
 
 
-
-
-
-    
-        if not self.is_path_cal:
-            self.update_path()
+        # if len(self.hosts) < 3:
+        self.update_path()
         paths = self.get_detail_path(src,dst)
         if len(paths) > 1 :
             out_port = self.install_path(paths,dst,dpid,parser,ofproto,msg)
@@ -248,17 +257,18 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
                                   in_port=in_port, actions=actions, data=data)
         datapath.send_msg(out)
 
-    def assemble_ack(self, pkt):
+    def assemble_ack(self, pkt, dpid):
+        dpid_yiaddr = self.get_ip(dpid)
         req_eth = pkt.get_protocol(ethernet.ethernet)
         req_ipv4 = pkt.get_protocol(ipv4.ipv4)
         req_udp = pkt.get_protocol(udp.udp)
         req = pkt.get_protocol(dhcp.dhcp)
         req.options.option_list.remove(
             next(opt for opt in req.options.option_list if opt.tag == 53))
-        req.options.option_list.insert(0, dhcp.option(tag=51, value='8640'))
+        req.options.option_list.insert(0, dhcp.option(tag=51, value=str.encode('8640')))
         req.options.option_list.insert(
-            0, dhcp.option(tag=53, value='05'.decode('hex')))
-
+            0, dhcp.option(tag=53, value=str.encode('\x05')))
+                                      
         ack_pkt = packet.Packet()
         ack_pkt.add_protocol(ethernet.ethernet(
             ethertype=req_eth.ethertype, dst=req_eth.src, src=self.hw_addr))
@@ -268,14 +278,15 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
         ack_pkt.add_protocol(dhcp.dhcp(op=2, chaddr=req_eth.src,
                                        siaddr=self.dhcp_server,
                                        boot_file=req.boot_file,
-                                       yiaddr=self.ip_addr,
+                                       yiaddr=dpid_yiaddr,
                                        xid=req.xid,
                                        options=req.options))
-        self.logger.info("ASSEMBLED ACK: %s" % ack_pkt)
+        self.logger.info("ASSEMBLED ACK")
         return ack_pkt
 
 
-    def assemble_offer(self, pkt):
+    def assemble_offer(self, pkt, dpid):
+        dpid_yiaddr = self.get_ip(dpid)
         disc_eth = pkt.get_protocol(ethernet.ethernet)
         disc_ipv4 = pkt.get_protocol(ipv4.ipv4)
         disc_udp = pkt.get_protocol(udp.udp)
@@ -295,7 +306,7 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
         disc.options.option_list.insert(
             0, dhcp.option(tag=12, value=self.hostname))
         disc.options.option_list.insert(
-            0, dhcp.option(tag=53, value='02'.decode('hex')))
+            0, dhcp.option(tag=53, value=str.encode('\x02')))
         disc.options.option_list.insert(
             0, dhcp.option(tag=54, value=self.bin_server))
 
@@ -308,29 +319,54 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
         offer_pkt.add_protocol(dhcp.dhcp(op=2, chaddr=disc_eth.src,
                                          siaddr=self.dhcp_server,
                                          boot_file=disc.boot_file,
-                                         yiaddr=self.ip_addr,
+                                         yiaddr=dpid_yiaddr,
                                          xid=disc.xid,
                                          options=disc.options))
-        self.logger.info("ASSEMBLED OFFER: %s" % offer_pkt)
+        self.logger.info("ASSEMBLED OFFER: ")
         return offer_pkt
 
 
     def dhcp_handler(self,datapath,in_port,pkt):
         dhcp_pkt = pkt.get_protocols(dhcp.dhcp)[0]
         dhcp_state = self.get_state(dhcp_pkt)
-        self.logger.info("NEW DHCP %s PACKET RECEIVED: %s" %
-                         (dhcp_state, dhcp_pkt))
+        self.logger.info("NEW DHCP -->%s<-- PACKET RECEIVED" %
+                         (dhcp_state))
         if dhcp_state == 'DHCPDISCOVER':
-            self._send_packet(datapath, port, self.assemble_offer(pkt))
+            self._send_packetOut(datapath, in_port, self.assemble_offer(pkt,datapath.id))
         elif dhcp_state == 'DHCPREQUEST':
-            self._send_packet(datapath, port, self.assemble_ack(pkt))
+            self._send_packetOut(datapath, in_port, self.assemble_ack(pkt,datapath.id))
         else:
             return
 
+    def _send_packetOut(self,datapath,port,pkt):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        pkt.serialize()
+        self.logger.info("packet-out DHCP " )
+        data = pkt.data
+        actions = [parser.OFPActionOutput(port=port)]
+        out = parser.OFPPacketOut(datapath=datapath,
+                                  buffer_id=ofproto.OFP_NO_BUFFER,
+                                  in_port=ofproto.OFPP_CONTROLLER,
+                                  actions=actions,
+                                  data=data)
+        datapath.send_msg(out)
+
     def get_ip(self,dpid):
-        
+        if dpid not in self.ip_pool:
+            ip = self.ip_addr_prefix+str(self.ip_counter)
+            self.ip_counter+=1
+            self.ip_pool[dpid] = ip
+        else:
+            ip = self.ip_pool[dpid]
+        return ip
 
     def get_state(self, dhcp_pkt):
+
+        opt_list = [opt for opt in dhcp_pkt.options.option_list if opt.tag == 53]
+
+        print("opt_list: ",opt_list[0].value)
+
         dhcp_state = ord(
             [opt for opt in dhcp_pkt.options.option_list if opt.tag == 53][0].value)
         if dhcp_state == 1:
@@ -511,7 +547,7 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
 
         self.add_link(dst_dpid,src_dpid,link_info_2)
         
-        # self.logger.info('event_host_add %s',src_dpid)
+        self.logger.info('event_host_add %s',src_dpid)
 
 
 
@@ -656,8 +692,9 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
 
     
     def update_path(self):
-        if self.is_path_cal:
-            return
+        # if self.is_path_cal:
+        #     return
+        print("all hosts: ",self.hosts.keys())
         self.full_path = algorithms.get_all_path(self.hosts,self.net_topo)
 
         self.is_path_cal = True
