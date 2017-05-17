@@ -2,12 +2,12 @@ from collections import defaultdict
 
 
 
-def get_detail_path(src,dst,all_path,topo):
+def get_detail_path(src,dst,full_path,topo):
     detail_path = {}
-    print("start to route! from: ",src," to: ",dst)
-    full_path = all_path[src][dst]
+    # print("start to route! from: ",src," to: ",dst)
+    
 
-    print("raw path is ",full_path)
+    # print("raw path is ",full_path)
 
     if full_path is None:
         return detail_path
@@ -31,13 +31,13 @@ def get_detail_path(src,dst,all_path,topo):
         detail_path[node] = [in_port,out_port]
 
     
-    print(detail_path)
+    # print(detail_path)
 
     return detail_path
 
 
 
-def get_path(src,nodes,path):
+def form_path(src,nodes,path):
 
     all_path = {}
 
@@ -139,7 +139,7 @@ def dijkstra(src,topo):
     # print("final dis:",Distance)
     # print("paths    :",path)
 
-    all_path = get_path(src,nodes,path)
+    all_path = form_path(src,nodes,path)
 
     return all_path
         
@@ -154,36 +154,68 @@ def get_all_path(hosts,topo):
         path = dijkstra(src,topo)
         for dst in path.keys():
             all_path[src][dst] = path[dst]
-        print("start: ",src)
-        print(path)
+        # print("start: ",src)
+        # print(path)
     return all_path
     # return all_path
 
 
+def get_path(src,dst,paths,topo):
+    if paths[src][dst] is not None and len(paths[src][dst]) > 0:
+        print("path is exits: %s --> %s : %s" % (src,dst,paths[src][dst]))
+        return paths[src][dst]
+
+    path = dijkstra(src,topo)
+
+
+    for dst_node in path.keys():
+        paths[src][dst_node] = get_detail_path(src,dst_node,path[dst_node],topo)
+    
+    print("%s --> %s : %s" % (src,dst,paths[src][dst]))
+
+    return paths[src][dst]
+
+
+
 if __name__ == "__main__":
     topo = defaultdict(lambda: defaultdict(lambda: None))
-    topo['a']['f'] = 1
-    topo['a']['e'] = 1
-    topo['a']['c'] = 1
-    topo['b']['c'] = 1
-    topo['c']['b'] = 1
-    topo['c']['a'] = 1
-    topo['c']['d'] = 1
-    topo['d']['c'] = 1
-    topo['d']['f'] = 1
-    topo['d']['e'] = 1
-    topo['e']['d'] = 1
-    topo['e']['a'] = 1
-    topo['e']['f'] = 1
-    topo['f']['a'] = 1
-    topo['f']['e'] = 1
-    topo['f']['d'] = 1
+    topo['f']['a'] = {'dst':{'port_no':0},'src':{'port_no':0}}
+    topo['a']['f'] = {'dst':{'port_no':0},'src':{'port_no':0}}
+
+
+    topo['a']['e'] = {'dst':{'port_no':1},'src':{'port_no':1}}
+    topo['e']['a'] = {'dst':{'port_no':1},'src':{'port_no':1}}
+
+
+    topo['a']['c'] = {'dst':{'port_no':1},'src':{'port_no':2}}
+    topo['c']['a'] = {'dst':{'port_no':2},'src':{'port_no':1}}
+
+
+    topo['b']['c'] = {'dst':{'port_no':2},'src':{'port_no':0}}
+    topo['c']['b'] = {'dst':{'port_no':0},'src':{'port_no':2}}
+    
+    topo['c']['d'] = {'dst':{'port_no':2},'src':{'port_no':0}}
+    topo['d']['c'] = {'dst':{'port_no':0},'src':{'port_no':2}}
+
+
+    topo['d']['f'] = {'dst':{'port_no':1},'src':{'port_no':1}}
+    topo['f']['d'] = {'dst':{'port_no':1},'src':{'port_no':1}}
+
+
+    topo['d']['e'] = {'dst':{'port_no':2},'src':{'port_no':0}}
+    topo['e']['d'] = {'dst':{'port_no':0},'src':{'port_no':2}}
+    
+    topo['e']['f'] = {'dst':{'port_no':2},'src':{'port_no':0}}
+    topo['f']['e'] = {'dst':{'port_no':0},'src':{'port_no':2}}
+    
 
     # path = dijkstra('b',topo)
     # print(path)
-    paths = get_all_path(topo)
+    all_path = defaultdict(lambda: defaultdict(lambda: None))
 
-    print(paths)
+    paths = get_path('d','f',all_path,topo)
+    get_path('d','a',all_path,topo)
+    print(all_path)
 
 
         
