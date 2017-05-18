@@ -102,7 +102,7 @@ class TopoSwitch_13(simple_switch_13.SimpleSwitch13):
         self.monitor_thread = hub.spawn(self._monitor)
         
         #---topology---------
-        self.dps = {}
+        self.switches = {}
         self.port_state = {}
         self.links = defaultdict(lambda: None)
         self.hosts = HostState()
@@ -114,7 +114,18 @@ class TopoSwitch_13(simple_switch_13.SimpleSwitch13):
 
         #--------------
 
-
+    @set_ev_cls(ofp_event.EventOFPStateChange,
+                [MAIN_DISPATCHER, DEAD_DISPATCHER])
+    def _state_change_handler(self, ev):
+        datapath = ev.datapath
+        if ev.state == MAIN_DISPATCHER:
+            if datapath.id not in self.datapaths:
+                self.logger.debug('register datapath: %016x', datapath.id)
+                self.datapaths[datapath.id] = datapath
+        elif ev.state == DEAD_DISPATCHER:
+            if datapath.id in self.datapaths:
+                self.logger.debug('unregister datapath: %016x', datapath.id)
+                del self.datapaths[datapath.id]
 
 
     @set_ev_cls(event.EventSwitchEnter)
@@ -141,7 +152,7 @@ class TopoSwitch_13(simple_switch_13.SimpleSwitch13):
 
     def _register(self,dp):
         assert dp.id is not None
-        self.dps[dp.id] = dp
+        self.switches[dp.id] = dp
         if dp.id not in self.port_state:
             self.port_state[dp.id] = PortState()
             # print("register ports: ",dp.ports.values())
@@ -150,17 +161,29 @@ class TopoSwitch_13(simple_switch_13.SimpleSwitch13):
                 self.port_state[dp.id].add(port.port_no, port)
 
     def _unregister(self, dp):
-        if dp.id in self.dps:
-            if (self.dps[dp.id] == dp):
-                del self.dps[dp.id]
+        if dp.id in self.switches:
+            if (self.switches[dp.id] == dp):
+                del self.switches[dp.id]
                 del self.port_state[dp.id]
 
+
+    #- Reminder: switch and datapath is different
+    #- switch class is in ryu.topology.switches.Swtich, it contains 
+    #- the switch's dpid, port etc.
+    #- And the datapath class is in ryu.controller.Datapath
+    #- datapath is a class to describe an OpenFlow switch connected to this controller.
+    #- it's attributes please see ryu.controller.Datapath
+    
     def _get_switch(self, dpid):
-        if dpid in self.dps:
-            switch = Switch(self.dps[dpid])
+        if dpid in self.switches:
+            switch = Switch(self.switches[dpid])
             for ofpport in self.port_state[dpid].values():
                 switch.add_port(ofpport)
             return switch
+    
+    def _get_datapath(self,dpid):
+        if dpid in self.datapaths:
+            return self.datapaths[dpid]
 
     # def _is_edge_port(self, port):
     #     if port.hw_addr in self.switch_macs:

@@ -70,7 +70,7 @@ msg struct
 
 from operator import attrgetter
 
-import simple_switch_13
+import topo_switch_13
 from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER, DEAD_DISPATCHER,CONFIG_DISPATCHER
 from ryu.controller.handler import set_ev_cls
@@ -95,22 +95,23 @@ ETHERNET_MULTICAST = "ff:ff:ff:ff:ff:ff"
 
 
 
-class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
+class OSPFswitch_13(topo_switch_13.TopoSwitch_13):
 
     def __init__(self, *args, **kwargs):
         super(OSPFswitch_13, self).__init__(*args, **kwargs)
-        self.datapaths = {}
+
+
         self.arp_table = {}
-        self.monitor_thread = hub.spawn(self._monitor)
-        self.flows = defaultdict(lambda: defaultdict(lambda: None))
+
+
+
         self.sw = {}
-        self.topology_api_app = self
-        self.all_switches = Switches()
-        # links has no weight!!
-        self.net_topo = defaultdict(lambda: defaultdict(lambda: None))
+
+
+
 
         self.full_path = defaultdict(lambda: defaultdict(lambda: None))
-        self.hosts = defaultdict(lambda: None)
+
         
 
         self.hw_addr = '0a:e4:1c:d1:3e:44'
@@ -144,28 +145,25 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
         eth = pkt.get_protocols(ethernet.ethernet)[0]
 
 
-        
+        dst_mac = eth.dst
+        src_mac = eth.src
+
+
+        #--------process IPV6 packet---
         if pkt.get_protocol(ipv6.ipv6) :  # Drop the IPV6 Packets.
             match = parser.OFPMatch(eth_type=eth.ethertype)
             actions = []
             self.add_flow(datapath, 1, match, actions)
             return None
+
+        #------end
         
 
-
-
+        #--------process LLDP packet--
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             # ignore lldp packet
             return
-
-
-        dst_mac = eth.dst
-        src_mac = eth.src
-
-        if src_mac not in self.all_macs:
-            print("new mac address:  ",src_mac)
-            self.all_macs.append(src_mac)
- 
+        #-------end
 
         #-------process ARP--
         arp_pkt = pkt.get_protocol(arp.arp)
@@ -177,7 +175,6 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
             if self.arp_handler(msg,pkt):
                 return None
         #----end
-
 
         #-----process  DHCP--
 
@@ -198,7 +195,6 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
             self.add_flow(datapath, 1, match, actions)
             return None
         #-----end
-
 
         # type of dpid is 16 int
         dpid = datapath.id
@@ -235,6 +231,51 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
         out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
                                   in_port=in_port, actions=actions, data=data)
         datapath.send_msg(out)
+
+    def install_path(self,paths,dst,in_dpid,parser,ofproto,msg):
+
+        nodes = list(paths.keys())
+        out_port = 0
+        #nodes = [int(node) for node in list(paths.keys())]
+        # if in_dpid not in nodes:
+        #     return 
+        self.logger.debug("try to install path for : %s",nodes)
+        self.logger.debug("origin dpid is %s",in_dpid)
+        for node in nodes:
+            target_dpid = str_to_dpid(node)
+            if target_dpid == in_dpid:
+                out_port = paths[node][1]
+            target_in_port = paths[node][0]
+            target_out_port = paths[node][1]
+
+            target_actions = [parser.OFPActionOutput(target_out_port)]
+
+            # target_match = parser.OFPMatch(in_port=target_in_port, eth_dst=dst)
+            target_match = parser.OFPMatch(eth_dst=dst)
+
+            target_datapath = self._get_datapath(target_dpid)
+
+            if msg.buffer_id != ofproto.OFP_NO_BUFFER:
+                self.add_flow(target_datapath, 1, target_match, target_actions, msg.buffer_id)
+            else:
+                self.add_flow(target_datapath, 1, target_match, target_actions)
+
+        return out_port
+
+
+    def update_path(self):
+        # if :
+        #     return
+        self.logger.debug("all hosts: %s",self.hosts.keys())
+        self.full_path = algorithms.get_all_path(self.hosts,self.net_topo)
+
+    
+    
+    def get_detail_path(self,src,dst):
+        return algorithms.get_path(src,dst,self.full_path,self.net_topo)
+
+
+
 
     def assemble_ack(self, pkt, dpid):
         dpid_yiaddr = self.get_ip(dpid)
@@ -426,151 +467,12 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
 
 
 
-    def install_path(self,paths,dst,in_dpid,parser,ofproto,msg):
-
-        nodes = list(paths.keys())
-        out_port = 0
-        #nodes = [int(node) for node in list(paths.keys())]
-        # if in_dpid not in nodes:
-        #     return 
-        self.logger.debug("try to install path for : %s",nodes)
-        self.logger.debug("origin dpid is %s",in_dpid)
-        for node in nodes:
-            target_dpid = int(node,16)
-            if target_dpid == in_dpid:
-                out_port = paths[node][1]
-            target_in_port = paths[node][0]
-            target_out_port = paths[node][1]
-
-            target_actions = [parser.OFPActionOutput(target_out_port)]
-
-            # target_match = parser.OFPMatch(in_port=target_in_port, eth_dst=dst)
-            target_match = parser.OFPMatch(eth_dst=dst)
-            try:
-                target_datapath = self.datapaths[target_dpid]
-            except KeyError:
-                self.logger.debug("error !!!! target_datapath is: %s",target_datapath)
-                self.logger.debug("datapaths is: %s",self.datapaths)
-                exit()
-            if msg.buffer_id != ofproto.OFP_NO_BUFFER:
-                self.add_flow(target_datapath, 1, target_match, target_actions, msg.buffer_id)
-            else:
-                self.add_flow(target_datapath, 1, target_match, target_actions)
-
-        return out_port
-
-    @set_ev_cls(event.EventSwitchEnter)
-    def _event_switch_enter_handler(self,ev):
-
-        msg = ev.switch
-    #    msg struct: 
-    #    {'dpid': '0000000000000001', 
-    #    'ports': [
-    #               {'dpid': '0000000000000001', 
-    #               'hw_addr': 'b6:b8:0b:3f:e5:86', 
-    #               'name': 's1-eth1', 
-    #               'port_no': '00000001'}, 
-    #               {'dpid': '0000000000000001', 
-    #               'hw_addr': '2e:fa:67:bd:f3:b2', 
-    #               'name': 's1-eth2', 
-    #               'port_no': '00000002'}
-    #             ]
-    #     }
-
-        # todo consider duplicate switch
-        self.all_switches._register(msg.dp)
-        # self.all_switches[msg['dpid']]['ports'] = msg['ports']
-        self.logger.debug('Switch enter: %s',dpid_to_str(msg.dp.id))
-
-    @set_ev_cls(event.EventSwitchLeave)
-    def _event_switch_leave_handler(self, ev):
-        self.logger.debug('Switch Leave: %s',dpid_to_str(ev.switch.dp.id))
-
-    @set_ev_cls(event.EventLinkAdd)
-    def _event_link_add_handler(self, ev):
-        msg = ev.link.to_dict()
-
-        src_dpid = msg['src']['dpid']
-        dst_dpid = msg['dst']['dpid']
-
-        self.add_link(src_dpid,dst_dpid,msg)
-        
-
-    # @handler.set_ev_cls(event.EventLinkDelete)
-    # def _event_link_delete_handler(self, ev):
-    #     msg = ev.link.to_dict()
-        
-    #     print('event_link_delete')
-    #     print(msg)
-
-
-    # @set_ev_cls(event.EventHostAdd)
-    # def _event_host_add_handler(self, ev):
-    #     msg = ev.host.to_dict()
-
-    #     # direct link to switch's port info
-    #     dst_port = msg['port']
-
-    #     # host port info
-    #     src_port = {'hw_addr': msg['mac'],
-    #                 'dpid':msg['mac'],
-    #                 'port_no':'00000001',
-    #                 'name':'host'}
-
-    #     src_dpid = msg['mac']
-    #     dst_dpid = msg['port']['dpid']
-
-    #     link_info_1 = {'src':src_port,'dst':dst_port}
-    #     link_info_2 = {'src':dst_port,'dst':src_port}
-
-    #     self.hosts[msg['mac']] = 1
-        
-
-    #     self.add_link(src_dpid,dst_dpid,link_info_1)
-
-    #     self.add_link(dst_dpid,src_dpid,link_info_2)
-        
-    #     self.logger.info('event_host_add %s',src_dpid)
 
 
 
-    @set_ev_cls(ofp_event.EventOFPStateChange,
-                [MAIN_DISPATCHER, DEAD_DISPATCHER])
-    def _state_change_handler(self, ev):
-        datapath = ev.datapath
-        if ev.state == MAIN_DISPATCHER:
-            if datapath.id not in self.datapaths:
-                self.logger.debug('register datapath: %016x', datapath.id)
-                self.datapaths[datapath.id] = datapath
-        elif ev.state == DEAD_DISPATCHER:
-            if datapath.id in self.datapaths:
-                self.logger.debug('unregister datapath: %016x', datapath.id)
-                del self.datapaths[datapath.id]
 
-    def _monitor(self):
-        while True:
-            #print("size of dp "+str(len(self.datapaths)))
-            # for dp in self.datapaths.values():
-            #     #self._request_stats(dp)
-            #     self.send_flow_stats_request(dp,0,0)
-            self.print_topo()
-            self.logger.info(self.hosts.keys())
-            if len(self.all_switches.dps) > 0:
-                hosts = get_all_host(self.topology_api_app)
-                for host in hosts:
-                    self.add_host(host.to_dict())
-            hub.sleep(10)
 
-    def _request_stats(self, datapath):
-        self.logger.debug('send stats request: %016x', datapath.id)
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
 
-        req = parser.OFPFlowStatsRequest(datapath)
-        datapath.send_msg(req)
-
-        req = parser.OFPPortStatsRequest(datapath, 0, ofproto.OFPP_ANY)
-        datapath.send_msg(req)
 
     # @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
     # def _flow_stats_reply_handler(self, ev):
@@ -607,113 +509,25 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
     #                          stat.rx_packets, stat.rx_bytes, stat.rx_errors,
     #                          stat.tx_packets, stat.tx_bytes, stat.tx_errors)
 
-    def send_flow_stats_request(self, datapath,cookie=0,cookie_mask=0):
-        ofp = datapath.ofproto
-        ofp_parser = datapath.ofproto_parser
+    # def send_flow_stats_request(self, datapath,cookie=0,cookie_mask=0):
+    #     ofp = datapath.ofproto
+    #     ofp_parser = datapath.ofproto_parser
 
-        cookie = cookie
-        cookie_mask = cookie_mask
+    #     cookie = cookie
+    #     cookie_mask = cookie_mask
 
-        match = ofp_parser.OFPMatch()
-        req = ofp_parser.OFPFlowStatsRequest(datapath, 0,
-                                                ofp.OFPTT_ALL,
-                                                ofp.OFPP_ANY, ofp.OFPG_ANY,
-                                                cookie, cookie_mask,
-                                                match)
-        datapath.send_msg(req)
-
-
-
-    @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
-    def flow_stats_reply_handler(self, ev):
-        # flows = []
-        self.logger.debug('table_id cookie   '
-                            'packet_count     byte_count')
-        self.logger.debug('-------- -------- '
-                            '---------------- ----------')
-        for stat in ev.msg.body:
-            # flows.append('table_id=%s '
-            #                 'duration_sec=%d duration_nsec=%d '
-            #                 'priority=%d '
-            #                 'idle_timeout=%d hard_timeout=%d flags=0x%04x '
-            #                 'cookie=%d packet_count=%d byte_count=%d '
-            #                 'match=%s instructions=%s' %
-            #                 (stat.table_id,
-            #                 stat.duration_sec, stat.duration_nsec,
-            #                 stat.priority,
-            #                 stat.idle_timeout, stat.hard_timeout, stat.flags,
-            #                 stat.cookie, stat.packet_count, stat.byte_count,
-            #                 stat.match, stat.instructions))
-            if(self.is_new_flow(stat.cookie)):
-                self.flows[stat.cookie]["table_id"] = stat.table_id
-                self.flows[stat.cookie]["packet_count"] = [stat.packet_count]
-                self.flows[stat.cookie]["byte_count"] = [stat.byte_count]
-            else:
-                self.flows[stat.cookie]["packet_count"].append(stat.packet_count)
-                self.flows[stat.cookie]["byte_count"].append(stat.byte_count)
-
-            self.logger.debug('%8d %8d %16d %16d',stat.table_id,stat.cookie,
-                                                  stat.packet_count,stat.byte_count)
-
-        
-        # self.logger.info('FlowStats: %s', flows)
+    #     match = ofp_parser.OFPMatch()
+    #     req = ofp_parser.OFPFlowStatsRequest(datapath, 0,
+    #                                             ofp.OFPTT_ALL,
+    #                                             ofp.OFPP_ANY, ofp.OFPG_ANY,
+    #                                             cookie, cookie_mask,
+    #                                             match)
+    #     datapath.send_msg(req)
 
 
-    def is_new_flow(self,flow_cookie):
-        if len(self.flows[flow_cookie]) == 0:
-            return True
-        return False
-
-    def add_link(self,src,dst,msg):
-        self.net_topo[src][dst] = msg
-        self.logger.debug('link_add %s %s',src,dst)
-
-    def print_topo(self):
-
-        self.logger.info("--------------")
-        for node in self.net_topo:
-            self.logger.info("node--> %s",node)
-            for sub in self.net_topo[node]:
-                if self.net_topo[node][sub] is not None:
-                    self.logger.info("       sub: %s",sub)
-        self.logger.info("--------------")
-    def add_host(self,msg):
-
-        # direct link to switch's port info
-        dst_port = msg['port']
-
-        if self.hosts[msg['mac']] is not None:
-            return
-
-        # host port info
-        src_port = {'hw_addr': msg['mac'],
-                    'dpid':msg['mac'],
-                    'port_no':'00000001',
-                    'name':'host'}
-
-        src_dpid = msg['mac']
-        dst_dpid = msg['port']['dpid']
-
-        link_info_1 = {'src':src_port,'dst':dst_port}
-        link_info_2 = {'src':dst_port,'dst':src_port}
 
 
-        self.hosts[msg['mac']] = 1
-        
 
-        self.add_link(src_dpid,dst_dpid,link_info_1)
 
-        self.add_link(dst_dpid,src_dpid,link_info_2)
-        
-        self.logger.debug('event_host_add %s',msg)
-    def update_path(self):
-        # if :
-        #     return
-        self.logger.debug("all hosts: %s",self.hosts.keys())
-        self.full_path = algorithms.get_all_path(self.hosts,self.net_topo)
 
-       
 
-    
-    def get_detail_path(self,src,dst):
-        return algorithms.get_path(src,dst,self.full_path,self.net_topo)
