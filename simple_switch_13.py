@@ -106,7 +106,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         # learn a mac address to avoid FLOOD next time.
         self.mac_to_port[dpid][src] = in_port
 
-        print("mac_to_port ",self.mac_to_port)
+        # print("mac_to_port ",self.mac_to_port)
 
         if dst in self.mac_to_port[dpid]:
             out_port = self.mac_to_port[dpid][dst]

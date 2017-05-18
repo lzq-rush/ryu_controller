@@ -104,10 +104,10 @@ class TopoSwitch_13(simple_switch_13.SimpleSwitch13):
         #---topology---------
         self.dps = {}
         self.port_state = {}
-        self.links = {}
+        self.links = defaultdict(lambda: None)
         self.hosts = HostState()
 
-        # self.switch_macs = set()
+        self.switch_macs = set()
 
         # links has no weight!!
         self.net_topo = defaultdict(lambda: defaultdict(lambda: None))
@@ -146,7 +146,7 @@ class TopoSwitch_13(simple_switch_13.SimpleSwitch13):
             self.port_state[dp.id] = PortState()
             # print("register ports: ",dp.ports.values())
             for port in dp.ports.values():
-                # self.switch_macs.add(port.hw_addr)
+                self.switch_macs.add(port.hw_addr)
                 self.port_state[dp.id].add(port.port_no, port)
 
     def _unregister(self, dp):
@@ -162,11 +162,19 @@ class TopoSwitch_13(simple_switch_13.SimpleSwitch13):
                 switch.add_port(ofpport)
             return switch
 
-    def _is_edge_port(self, port):
-        for link in self.links:
-            if port == link.src or port == link.dst:
-                return False
+    # def _is_edge_port(self, port):
+    #     if port.hw_addr in self.switch_macs:
+    #         return False
+    #     return True
+        # for link in self.links:
+        #     if port == link.src or port == link.dst:
+        #         return False
 
+        # return True
+
+    def _is_edge_port(self, mac):
+        if mac in self.switch_macs:
+            return False
         return True
 
     # @set_ev_cls(event.EventSwitchLeave)
@@ -177,6 +185,8 @@ class TopoSwitch_13(simple_switch_13.SimpleSwitch13):
     @set_ev_cls(event.EventLinkAdd)
     def _event_link_add_handler(self, ev):
         msg = ev.link
+        if self.links[msg] is not None:
+            return
         self.links[msg] = 1
         self.logger.info('event_link_add ')
 
@@ -187,7 +197,7 @@ class TopoSwitch_13(simple_switch_13.SimpleSwitch13):
             for host_mac in self.hosts:
                 host = self.hosts[host_mac]
                 port = host.port
-                if not self._is_edge_port(port):
+                if not self._is_edge_port(host.mac):
                     del(self.hosts[host_mac])
                     mutex.release()
                     return
@@ -205,8 +215,9 @@ class TopoSwitch_13(simple_switch_13.SimpleSwitch13):
 
         msg = ev.host
         in_port = msg.port
+        mac = msg.mac
 
-        if self._is_edge_port(in_port):
+        if self._is_edge_port(mac):
             if mutex.acquire():
                 self.hosts.add(msg)
                 mutex.release()
@@ -216,11 +227,46 @@ class TopoSwitch_13(simple_switch_13.SimpleSwitch13):
     def _monitor(self):
         while True:
             self._update_host_list()
+            self._update_net_topo()
             self.logger.info("all hosts: %s",[host for host in self.hosts])
             self.logger.info("link number is: %s",len(self.links))
+            self.print_topo()
             hub.sleep(10)
 
 
+    def _update_net_topo(self):
+
+        for link in self.links:
+            src_port = link.src.to_dict()
+            dst_port = link.dst.to_dict()
+            src_mac = src_port['dpid']
+            dst_mac = dst_port['dpid']
+            self.net_topo[src_mac][dst_mac] = link.to_dict()
+
+        for host_mac in self.hosts:
+            host = self.hosts[host_mac].to_dict()
+            switch_port = host['port']
+            dpid = switch_port['dpid']
+
+            host_port = {'hw_addr': host['mac'],
+                        'dpid':host['mac'],
+                        'port_no':'00000001',
+                        'name':'host'}
+            hostid = host['mac']
+
+            link_info_1 = {'src':host_port,'dst':switch_port}
+            link_info_2 = {'src':switch_port,'dst':host_port}
+
+            self.net_topo[hostid][dpid] = link_info_1
+            self.net_topo[dpid][hostid] = link_info_2
 
 
+    def print_topo(self):
 
+        self.logger.info("--------------")
+        for node in self.net_topo:
+            self.logger.info("node--> %s",node)
+            for sub in self.net_topo[node]:
+                if self.net_topo[node][sub] is not None:
+                    self.logger.info("       sub: %s",sub)
+        self.logger.info("--------------")
