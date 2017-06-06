@@ -114,6 +114,8 @@ class TopoSwitch_13(simple_switch_13.SimpleSwitch13):
 
         #--------------
 
+        self.arp_table = {}
+
     @set_ev_cls(ofp_event.EventOFPStateChange,
                 [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def _state_change_handler(self, ev):

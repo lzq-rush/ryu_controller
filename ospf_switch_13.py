@@ -100,19 +100,9 @@ class OSPFswitch_13(topo_switch_13.TopoSwitch_13):
     def __init__(self, *args, **kwargs):
         super(OSPFswitch_13, self).__init__(*args, **kwargs)
 
-
-        self.arp_table = {}
-
-
-
         self.sw = {}
 
-
-
-
         self.full_path = defaultdict(lambda: defaultdict(lambda: None))
-
-        
 
         self.hw_addr = '0a:e4:1c:d1:3e:44'
         self.dhcp_server = '192.168.2.100'
@@ -123,7 +113,7 @@ class OSPFswitch_13(topo_switch_13.TopoSwitch_13):
         self.bin_netmask = addrconv.ipv4.text_to_bin(self.netmask)
         self.bin_server = addrconv.ipv4.text_to_bin(self.dhcp_server)
         self.ip_addr_prefix = '10.0.0.'
-        self.ip_counter = 1
+        self.ip_counter = 10
         self.ip_pool = {}
 
         self.all_macs = []
@@ -170,10 +160,12 @@ class OSPFswitch_13(topo_switch_13.TopoSwitch_13):
 
         if arp_pkt:
             self.arp_table[arp_pkt.src_ip] = src_mac
-            self.logger.debug(" ARP: %s -> %s", arp_pkt.src_ip, arp_pkt.dst_ip)
+            # print("arp: ",arp_pkt)
+            # self.logger.info(" ARP: %s -> %s", arp_pkt.src_ip, arp_pkt.dst_ip)
         
-            if self.arp_handler(msg,pkt):
-                return None
+            self.arp_handler(msg,pkt)
+
+            return None
         #----end
 
         #-----process  DHCP--
@@ -187,27 +179,28 @@ class OSPFswitch_13(topo_switch_13.TopoSwitch_13):
         #---process IGMP------
         # simply drop IGMP packet
         ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
-        dst_ipv4 = ipv4_pkt.dst
-        src_ipv4 = ipv4_pkt.src
-        if dst_ipv4 == '224.0.0.22' or dst_ipv4 == '224.0.0.251':
-            match = parser.OFPMatch(ipv4_dst=dst_ipv4)
-            actions = []
-            self.add_flow(datapath, 1, match, actions)
-            return None
+        if ipv4_pkt:
+            dst_ipv4 = ipv4_pkt.dst
+            src_ipv4 = ipv4_pkt.src
+            if dst_ipv4 == '224.0.0.22' or dst_ipv4 == '224.0.0.251':
+                match = parser.OFPMatch(ipv4_dst=dst_ipv4)
+                actions = []
+                self.add_flow(datapath, 1, match, actions)
+                return None
         #-----end
 
         # type of dpid is 16 int
         dpid = datapath.id
 
-        
-        # print(pkt.protocols)
+        if dst_mac == mac.BROADCAST_STR:
+            print(pkt)
         # print("------end------")
         
 
         # after filte ARP, IGMP, DHCP packet, log this packet_in message
         self.logger.debug("packet in %s %s %s %s", dpid, src_mac, dst_mac, in_port)
 
-        self.logger.debug("src_mac: %s src_ip_4: %s ----> dst_mac: %s dst_ip_4: %s",src_mac,src_ipv4,dst_mac,dst_ipv4)
+        # self.logger.debug("src_mac: %s src_ip_4: %s ----> dst_mac: %s dst_ip_4: %s",src_mac,src_ipv4,dst_mac,dst_ipv4)
 
 
         paths = self.get_detail_path(src_mac,dst_mac)
@@ -277,8 +270,8 @@ class OSPFswitch_13(topo_switch_13.TopoSwitch_13):
 
 
 
-    def assemble_ack(self, pkt, dpid):
-        dpid_yiaddr = self.get_ip(dpid)
+    def assemble_ack(self, pkt, chaddr):
+        chaddr_yiaddr = self.get_ip(chaddr)
         req_eth = pkt.get_protocol(ethernet.ethernet)
         req_ipv4 = pkt.get_protocol(ipv4.ipv4)
         req_udp = pkt.get_protocol(udp.udp)
@@ -298,15 +291,15 @@ class OSPFswitch_13(topo_switch_13.TopoSwitch_13):
         ack_pkt.add_protocol(dhcp.dhcp(op=2, chaddr=req_eth.src,
                                        siaddr=self.dhcp_server,
                                        boot_file=req.boot_file,
-                                       yiaddr=dpid_yiaddr,
+                                       yiaddr=chaddr_yiaddr,
                                        xid=req.xid,
                                        options=req.options))
         self.logger.debug("ASSEMBLED ACK")
         return ack_pkt
 
 
-    def assemble_offer(self, pkt, dpid):
-        dpid_yiaddr = self.get_ip(dpid)
+    def assemble_offer(self, pkt, chaddr):
+        chaddr_yiaddr = self.get_ip(chaddr)
         disc_eth = pkt.get_protocol(ethernet.ethernet)
         disc_ipv4 = pkt.get_protocol(ipv4.ipv4)
         disc_udp = pkt.get_protocol(udp.udp)
@@ -339,22 +332,23 @@ class OSPFswitch_13(topo_switch_13.TopoSwitch_13):
         offer_pkt.add_protocol(dhcp.dhcp(op=2, chaddr=disc_eth.src,
                                          siaddr=self.dhcp_server,
                                          boot_file=disc.boot_file,
-                                         yiaddr=dpid_yiaddr,
+                                         yiaddr=chaddr_yiaddr,
                                          xid=disc.xid,
                                          options=disc.options))
-        self.logger.debug("ASSEMBLED OFFER: ")
+        self.logger.debug("ASSEMBLED OFFER: %s --> %s",chaddr,chaddr_yiaddr)
         return offer_pkt
 
 
     def dhcp_handler(self,datapath,in_port,pkt):
         dhcp_pkt = pkt.get_protocols(dhcp.dhcp)[0]
+        chaddr = dhcp_pkt.chaddr
         dhcp_state = self.get_state(dhcp_pkt)
         self.logger.debug("NEW DHCP -->%s<-- PACKET RECEIVED" %
                          (dhcp_state))
         if dhcp_state == 'DHCPDISCOVER':
-            self._send_packetOut(datapath, in_port, self.assemble_offer(pkt,datapath.id))
+            self._send_packetOut(datapath, in_port, self.assemble_offer(pkt,chaddr))
         elif dhcp_state == 'DHCPREQUEST':
-            self._send_packetOut(datapath, in_port, self.assemble_ack(pkt,datapath.id))
+            self._send_packetOut(datapath, in_port, self.assemble_ack(pkt,chaddr))
         else:
             return
 
@@ -372,13 +366,13 @@ class OSPFswitch_13(topo_switch_13.TopoSwitch_13):
                                   data=data)
         datapath.send_msg(out)
 
-    def get_ip(self,dpid):
-        if dpid not in self.ip_pool:
+    def get_ip(self,mac):
+        if mac not in self.ip_pool:
             ip = self.ip_addr_prefix+str(self.ip_counter)
             self.ip_counter+=1
-            self.ip_pool[dpid] = ip
+            self.ip_pool[mac] = ip
         else:
-            ip = self.ip_pool[dpid]
+            ip = self.ip_pool[mac]
         return ip
 
     def get_state(self, dhcp_pkt):
@@ -399,7 +393,7 @@ class OSPFswitch_13(topo_switch_13.TopoSwitch_13):
             state = 'DHCPACK'
         return state  
 
-    def arp_handler(self, msg,pkt):
+    def arp_handler(self, msg, pkt):
         datapath = msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
@@ -407,7 +401,7 @@ class OSPFswitch_13(topo_switch_13.TopoSwitch_13):
 
 
         eth = pkt.get_protocols(ethernet.ethernet)[0]
-        arp_pkt = pkt.get_protocols(arp.arp)
+        arp_pkt = pkt.get_protocols(arp.arp)[0]
 
         if eth:
             eth_dst = eth.dst
@@ -461,7 +455,7 @@ class OSPFswitch_13(topo_switch_13.TopoSwitch_13):
                         in_port=ofproto.OFPP_CONTROLLER,
                         actions=actions, data=ARP_Reply.data)
                     datapath.send_msg(out)
-                    self.logger.debug("Send one ARP_Reply---")
+                    # self.logger.info("Send one ARP_Reply---")
                     return True
         return False
 
