@@ -125,6 +125,8 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
         self.ip_counter = 1
         self.ip_pool = {}
 
+        self.all_macs = []
+
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -159,6 +161,10 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
 
         dst_mac = eth.dst
         src_mac = eth.src
+
+        if src_mac not in self.all_macs:
+            print("new mac address:  ",src_mac)
+            self.all_macs.append(src_mac)
  
 
         #-------process ARP--
@@ -166,7 +172,7 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
 
         if arp_pkt:
             self.arp_table[arp_pkt.src_ip] = src_mac
-            self.logger.info(" ARP: %s -> %s", arp_pkt.src_ip, arp_pkt.dst_ip)
+            self.logger.debug(" ARP: %s -> %s", arp_pkt.src_ip, arp_pkt.dst_ip)
         
             if self.arp_handler(msg,pkt):
                 return None
@@ -203,17 +209,18 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
         
 
         # after filte ARP, IGMP, DHCP packet, log this packet_in message
-        self.logger.info("packet in %s %s %s %s", dpid, src_mac, dst_mac, in_port)
+        self.logger.debug("packet in %s %s %s %s", dpid, src_mac, dst_mac, in_port)
 
-        self.logger.info("src_mac: %s src_ip_4: %s ----> dst_mac: %s dst_ip_4: %s",src_mac,src_ipv4,dst_mac,dst_ipv4)
+        self.logger.debug("src_mac: %s src_ip_4: %s ----> dst_mac: %s dst_ip_4: %s",src_mac,src_ipv4,dst_mac,dst_ipv4)
 
 
         paths = self.get_detail_path(src_mac,dst_mac)
         if paths is not None and len(paths) > 0:
             out_port = self.install_path(paths,dst_mac,dpid,parser,ofproto,msg)
         else:
-            out_port = ofproto.OFPP_FLOOD
 
+            # out_port = ofproto.OFPP_FLOOD
+            return 
 
         # print("path is: ",paths)
 
@@ -253,7 +260,7 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
                                        yiaddr=dpid_yiaddr,
                                        xid=req.xid,
                                        options=req.options))
-        self.logger.info("ASSEMBLED ACK")
+        self.logger.debug("ASSEMBLED ACK")
         return ack_pkt
 
 
@@ -294,14 +301,14 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
                                          yiaddr=dpid_yiaddr,
                                          xid=disc.xid,
                                          options=disc.options))
-        self.logger.info("ASSEMBLED OFFER: ")
+        self.logger.debug("ASSEMBLED OFFER: ")
         return offer_pkt
 
 
     def dhcp_handler(self,datapath,in_port,pkt):
         dhcp_pkt = pkt.get_protocols(dhcp.dhcp)[0]
         dhcp_state = self.get_state(dhcp_pkt)
-        self.logger.info("NEW DHCP -->%s<-- PACKET RECEIVED" %
+        self.logger.debug("NEW DHCP -->%s<-- PACKET RECEIVED" %
                          (dhcp_state))
         if dhcp_state == 'DHCPDISCOVER':
             self._send_packetOut(datapath, in_port, self.assemble_offer(pkt,datapath.id))
@@ -314,7 +321,7 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         pkt.serialize()
-        self.logger.info("packet-out DHCP " )
+        self.logger.debug("packet-out DHCP " )
         data = pkt.data
         actions = [parser.OFPActionOutput(port=port)]
         out = parser.OFPPacketOut(datapath=datapath,
@@ -337,7 +344,7 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
 
         opt_list = [opt for opt in dhcp_pkt.options.option_list if opt.tag == 53]
 
-        print("opt_list: ",opt_list[0].value)
+        self.logger.debug("opt_list: %s",opt_list[0].value)
 
         dhcp_state = ord(
             [opt for opt in dhcp_pkt.options.option_list if opt.tag == 53][0].value)
@@ -413,7 +420,7 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
                         in_port=ofproto.OFPP_CONTROLLER,
                         actions=actions, data=ARP_Reply.data)
                     datapath.send_msg(out)
-                    print("Send one ARP_Reply---")
+                    self.logger.debug("Send one ARP_Reply---")
                     return True
         return False
 
@@ -426,8 +433,8 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
         #nodes = [int(node) for node in list(paths.keys())]
         # if in_dpid not in nodes:
         #     return 
-        print("try to install path for : ",nodes)
-        print("origin dpid is ",in_dpid)
+        self.logger.debug("try to install path for : %s",nodes)
+        self.logger.debug("origin dpid is %s",in_dpid)
         for node in nodes:
             target_dpid = int(node,16)
             if target_dpid == in_dpid:
@@ -436,12 +443,14 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
             target_out_port = paths[node][1]
 
             target_actions = [parser.OFPActionOutput(target_out_port)]
-            target_match = parser.OFPMatch(in_port=target_in_port, eth_dst=dst)
+
+            # target_match = parser.OFPMatch(in_port=target_in_port, eth_dst=dst)
+            target_match = parser.OFPMatch(eth_dst=dst)
             try:
                 target_datapath = self.datapaths[target_dpid]
             except KeyError:
-                print("error !!!! target_datapath is: ",target_datapath)
-                print("datapaths is: ",self.datapaths)
+                self.logger.debug("error !!!! target_datapath is: %s",target_datapath)
+                self.logger.debug("datapaths is: %s",self.datapaths)
                 exit()
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
                 self.add_flow(target_datapath, 1, target_match, target_actions, msg.buffer_id)
@@ -471,11 +480,11 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
         # todo consider duplicate switch
         self.all_switches._register(msg.dp)
         # self.all_switches[msg['dpid']]['ports'] = msg['ports']
-        self.logger.info('Switch enter: %s',dpid_to_str(msg.dp.id))
+        self.logger.debug('Switch enter: %s',dpid_to_str(msg.dp.id))
 
     @set_ev_cls(event.EventSwitchLeave)
     def _event_switch_leave_handler(self, ev):
-        self.logger.info('Switch Leave: %s',dpid_to_str(ev.switch.dp.id))
+        self.logger.debug('Switch Leave: %s',dpid_to_str(ev.switch.dp.id))
 
     @set_ev_cls(event.EventLinkAdd)
     def _event_link_add_handler(self, ev):
@@ -495,33 +504,33 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
     #     print(msg)
 
 
-    @set_ev_cls(event.EventHostAdd)
-    def _event_host_add_handler(self, ev):
-        msg = ev.host.to_dict()
+    # @set_ev_cls(event.EventHostAdd)
+    # def _event_host_add_handler(self, ev):
+    #     msg = ev.host.to_dict()
 
-        # direct link to switch's port info
-        dst_port = msg['port']
+    #     # direct link to switch's port info
+    #     dst_port = msg['port']
 
-        # host port info
-        src_port = {'hw_addr': msg['mac'],
-                    'dpid':msg['mac'],
-                    'port_no':'00000001',
-                    'name':'host'}
+    #     # host port info
+    #     src_port = {'hw_addr': msg['mac'],
+    #                 'dpid':msg['mac'],
+    #                 'port_no':'00000001',
+    #                 'name':'host'}
 
-        src_dpid = msg['mac']
-        dst_dpid = msg['port']['dpid']
+    #     src_dpid = msg['mac']
+    #     dst_dpid = msg['port']['dpid']
 
-        link_info_1 = {'src':src_port,'dst':dst_port}
-        link_info_2 = {'src':dst_port,'dst':src_port}
+    #     link_info_1 = {'src':src_port,'dst':dst_port}
+    #     link_info_2 = {'src':dst_port,'dst':src_port}
 
-        self.hosts[msg['mac']] = 1
+    #     self.hosts[msg['mac']] = 1
         
 
-        self.add_link(src_dpid,dst_dpid,link_info_1)
+    #     self.add_link(src_dpid,dst_dpid,link_info_1)
 
-        self.add_link(dst_dpid,src_dpid,link_info_2)
+    #     self.add_link(dst_dpid,src_dpid,link_info_2)
         
-        self.logger.info('event_host_add %s',src_dpid)
+    #     self.logger.info('event_host_add %s',src_dpid)
 
 
 
@@ -545,7 +554,7 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
             #     #self._request_stats(dp)
             #     self.send_flow_stats_request(dp,0,0)
             self.print_topo()
-            print(self.hosts.keys())
+            self.logger.info(self.hosts.keys())
             if len(self.all_switches.dps) > 0:
                 hosts = get_all_host(self.topology_api_app)
                 for host in hosts:
@@ -618,9 +627,9 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
     @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
     def flow_stats_reply_handler(self, ev):
         # flows = []
-        self.logger.info('table_id cookie   '
+        self.logger.debug('table_id cookie   '
                             'packet_count     byte_count')
-        self.logger.info('-------- -------- '
+        self.logger.debug('-------- -------- '
                             '---------------- ----------')
         for stat in ev.msg.body:
             # flows.append('table_id=%s '
@@ -643,7 +652,7 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
                 self.flows[stat.cookie]["packet_count"].append(stat.packet_count)
                 self.flows[stat.cookie]["byte_count"].append(stat.byte_count)
 
-            self.logger.info('%8d %8d %16d %16d',stat.table_id,stat.cookie,
+            self.logger.debug('%8d %8d %16d %16d',stat.table_id,stat.cookie,
                                                   stat.packet_count,stat.byte_count)
 
         
@@ -657,17 +666,17 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
 
     def add_link(self,src,dst,msg):
         self.net_topo[src][dst] = msg
-        self.logger.info('link_add %s %s',src,dst)
+        self.logger.debug('link_add %s %s',src,dst)
 
     def print_topo(self):
 
-        print("--------------")
+        self.logger.info("--------------")
         for node in self.net_topo:
-            print("node-->",node)
+            self.logger.info("node--> %s",node)
             for sub in self.net_topo[node]:
                 if self.net_topo[node][sub] is not None:
-                    print("       sub: ",sub)
-        print("--------------")
+                    self.logger.info("       sub: %s",sub)
+        self.logger.info("--------------")
     def add_host(self,msg):
 
         # direct link to switch's port info
@@ -696,11 +705,11 @@ class OSPFswitch_13(simple_switch_13.SimpleSwitch13):
 
         self.add_link(dst_dpid,src_dpid,link_info_2)
         
-        self.logger.info('event_host_add %s',msg)
+        self.logger.debug('event_host_add %s',msg)
     def update_path(self):
         # if :
         #     return
-        print("all hosts: ",self.hosts.keys())
+        self.logger.debug("all hosts: %s",self.hosts.keys())
         self.full_path = algorithms.get_all_path(self.hosts,self.net_topo)
 
        

@@ -161,15 +161,22 @@ def get_all_path(hosts,topo):
 
 
 def get_path(src,dst,paths,topo):
+
+    # if topo[src][dst] is None:
+    #     print("topo error!! %s --> %s" % (src,dst))
+    #     return None
+
     if paths[src][dst] is not None and len(paths[src][dst]) > 0:
         print("path is exits: %s --> %s : %s" % (src,dst,paths[src][dst]))
         return paths[src][dst]
 
     path = dijkstra(src,topo)
-
+    
+    
 
     for dst_node in path.keys():
         paths[src][dst_node] = get_detail_path(src,dst_node,path[dst_node],topo)
+        paths[dst_node][src] = get_detail_path(dst_node,src,list(reversed(path[dst_node])),topo)
     
     print("%s --> %s : %s" % (src,dst,paths[src][dst]))
 
